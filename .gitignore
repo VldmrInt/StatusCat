@@ -1,0 +1,4 @@
+.env
+youtrack_activity.json
+__pycache__/
+*.pyc
