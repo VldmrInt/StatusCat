@@ -26,7 +26,9 @@ notepad .\.env
 YOUTRACK_URL=https://your-company.youtrack.cloud
 YOUTRACK_TOKEN=perm-...
 YOUTRACK_STATE=В работе
+YOUTRACK_TESTING_STATE=Тестирование
 YOUTRACK_ASSIGNEE_FIELD=Assignee
+YOUTRACK_PRIORITY_FIELD=Priority
 YOUTRACK_PAGE_SIZE=100
 
 TELEGRAM_BOT_TOKEN=123456789:AA...
@@ -51,9 +53,22 @@ Assignee: * State: {In Progress}
 ```
 
 И создает или обновляет файл `youtrack_activity.json`.
+Отдельный список задач на тестировании с приоритетами записывается в
+`youtrack_testing.json`:
+
+```json
+[
+  {
+    "task": "ABC-124: Проверить авторизацию (https://your-company.youtrack.cloud/issue/ABC-124)",
+    "priority": "High"
+  }
+]
+```
+
 Если задан `TELEGRAM_BOT_TOKEN`, после обновления JSON скрипт отправит красиво
-отформатированный отчет в Telegram: с датой-временем обновления по Москве и
-кликабельными ссылками на задачи.
+отформатированный отчет в Telegram: с датой-временем обновления по Москве,
+кликабельными ссылками на задачи и отдельным списком задач в статусе
+`Тестирование` с их приоритетами.
 
 Если в вашем YouTrack статус называется `В работе`, запускайте так:
 
@@ -73,10 +88,35 @@ YOUTRACK_STATE=В работе
 python .\youtrack_activity.py -o .\activity.json -q "project: ABC Assignee: * State: {В работе}"
 ```
 
+Можно указать другой файл для списка задач на тестировании:
+
+```powershell
+python .\youtrack_activity.py --testing-output .\testing.json
+```
+
 Если поле исполнителя в YouTrack называется не `Assignee`, укажите его явно:
 
 ```powershell
 python .\youtrack_activity.py --assignee-field "Исполнитель"
+```
+
+Если поле приоритета называется не `Priority`, укажите его явно:
+
+```powershell
+python .\youtrack_activity.py --priority-field "Приоритет"
+```
+
+Если статус тестирования в YouTrack называется иначе, укажите его через аргумент
+или `.env`:
+
+```powershell
+python .\youtrack_activity.py --testing-state "Ready for QA"
+```
+
+Можно задать полный запрос для списка тестирования:
+
+```powershell
+python .\youtrack_activity.py --testing-query "project: ABC State: {Тестирование}"
 ```
 
 Отправить в другой чат:

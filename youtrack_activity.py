@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_STATE = "In Progress"
+DEFAULT_TESTING_STATE = "Тестирование"
+DEFAULT_PRIORITY_FIELD = "Priority"
 DEFAULT_TELEGRAM_CHAT_ID = "6274298423"
 TELEGRAM_MESSAGE_LIMIT = 4096
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
@@ -83,22 +85,40 @@ def load_issues(base_url: str, token: str, query: str, page_size: int) -> list[d
 
 
 def get_assignees(issue: dict[str, Any], field_name: str) -> list[str]:
-    for field in issue.get("customFields", []):
-        if field.get("name") != field_name:
+    value = get_custom_field_value(issue, field_name)
+    users = value if isinstance(value, list) else [value]
+    result = []
+    for user in users:
+        if not isinstance(user, dict):
             continue
+        name = user.get("fullName") or user.get("name") or user.get("login")
+        if name:
+            result.append(name)
+    return result
 
-        value = field.get("value")
-        users = value if isinstance(value, list) else [value]
-        result = []
-        for user in users:
-            if not isinstance(user, dict):
-                continue
-            name = user.get("fullName") or user.get("name") or user.get("login")
-            if name:
-                result.append(name)
-        return result
 
-    return []
+def get_custom_field_value(issue: dict[str, Any], field_name: str) -> Any:
+    for field in issue.get("customFields", []):
+        if field.get("name") == field_name:
+            return field.get("value")
+
+    return None
+
+
+def get_field_display_value(issue: dict[str, Any], field_name: str) -> str:
+    value = get_custom_field_value(issue, field_name)
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("fullName") or value.get("login") or "")
+    if isinstance(value, list):
+        values = [
+            str(item.get("name") or item.get("fullName") or item.get("login") or item)
+            if isinstance(item, dict)
+            else str(item)
+            for item in value
+            if item
+        ]
+        return ", ".join(value for value in values if value)
+    return str(value or "")
 
 
 def build_task_text(issue: dict[str, Any], base_url: str) -> str:
@@ -129,8 +149,36 @@ def build_activity(
     return dict(sorted(activity.items(), key=lambda item: item[0].casefold()))
 
 
+def build_testing_tasks(
+    issues: list[dict[str, Any]], priority_field: str, base_url: str
+) -> list[dict[str, str]]:
+    tasks: list[dict[str, str]] = []
+
+    for issue in issues:
+        task = build_task_text(issue, base_url)
+        if not task:
+            continue
+
+        tasks.append(
+            {
+                "task": task,
+                "priority": get_field_display_value(issue, priority_field)
+                or "Без приоритета",
+            }
+        )
+
+    return sorted(
+        tasks,
+        key=lambda item: (item["priority"].casefold(), item["task"].casefold()),
+    )
+
+
 def build_query(state: str) -> str:
     return f"Assignee: * State: {{{state}}}"
+
+
+def build_state_query(state: str) -> str:
+    return f"State: {{{state}}}"
 
 
 def parse_task_text(task: str) -> tuple[str, str | None]:
@@ -157,12 +205,14 @@ def format_moscow_datetime(now: datetime | None = None) -> str:
     return value.strftime("%d.%m.%Y %H:%M:%S МСК")
 
 
-def format_telegram_report(activity: dict[str, list[str]]) -> str:
+def format_telegram_report(
+    activity: dict[str, list[str]], testing_tasks: list[dict[str, str]]
+) -> str:
     updated_at = format_moscow_datetime()
 
-    if not activity:
+    if not activity and not testing_tasks:
         return (
-            "<b>YouTrack: сейчас задач в работе нет</b>\n"
+            "<b>YouTrack: сейчас задач в работе и на тестировании нет</b>\n"
             f"Обновлено: <b>{updated_at}</b>"
         )
 
@@ -170,14 +220,26 @@ def format_telegram_report(activity: dict[str, list[str]]) -> str:
     lines = [
         "<b>YouTrack: кто чем занят</b>",
         f"Обновлено: <b>{updated_at}</b>",
-        f"Пользователей: <b>{len(activity)}</b>, задач: <b>{task_count}</b>",
+        (
+            f"Пользователей: <b>{len(activity)}</b>, "
+            f"задач в работе: <b>{task_count}</b>, "
+            f"на тестировании: <b>{len(testing_tasks)}</b>"
+        ),
         "",
     ]
 
-    for user, tasks in activity.items():
-        lines.append(f"<b>{escape(user)}</b>")
-        for task in tasks:
-            lines.append(f"  - {format_telegram_task(task)}")
+    if activity:
+        for user, tasks in activity.items():
+            lines.append(f"<b>{escape(user)}</b>")
+            for task in tasks:
+                lines.append(f"  - {format_telegram_task(task)}")
+            lines.append("")
+
+    if testing_tasks:
+        lines.append("<b>Тестирование</b>")
+        for item in testing_tasks:
+            priority = escape(item["priority"])
+            lines.append(f"  - [{priority}] {format_telegram_task(item['task'])}")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -225,7 +287,7 @@ def send_telegram_report(bot_token: str, chat_id: str, message: str) -> None:
             json.loads(response.read().decode("utf-8"))
 
 
-def write_json(path: Path, data: dict[str, list[str]]) -> None:
+def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w",
@@ -261,6 +323,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Output JSON path. Default: youtrack_activity.json",
     )
     parser.add_argument(
+        "--testing-output",
+        default="youtrack_testing.json",
+        help="Testing tasks JSON path. Default: youtrack_testing.json",
+    )
+    parser.add_argument(
         "-q",
         "--query",
         default=os.getenv("YOUTRACK_QUERY"),
@@ -272,9 +339,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"State that means the task is currently in work. Default: {DEFAULT_STATE}",
     )
     parser.add_argument(
+        "--testing-state",
+        default=os.getenv("YOUTRACK_TESTING_STATE", DEFAULT_TESTING_STATE),
+        help=(
+            "State that means the task is currently in testing. "
+            f"Default: {DEFAULT_TESTING_STATE}"
+        ),
+    )
+    parser.add_argument(
+        "--testing-query",
+        default=os.getenv("YOUTRACK_TESTING_QUERY"),
+        help="Full YouTrack search query for testing tasks. Overrides --testing-state.",
+    )
+    parser.add_argument(
         "--assignee-field",
         default=os.getenv("YOUTRACK_ASSIGNEE_FIELD", "Assignee"),
         help="Assignee custom field name. Default: Assignee",
+    )
+    parser.add_argument(
+        "--priority-field",
+        default=os.getenv("YOUTRACK_PRIORITY_FIELD", DEFAULT_PRIORITY_FIELD),
+        help=f"Priority custom field name. Default: {DEFAULT_PRIORITY_FIELD}",
     )
     parser.add_argument(
         "--page-size",
@@ -311,14 +396,23 @@ def main() -> int:
         query = args.query or build_query(args.state)
         issues = load_issues(base_url, token, query, args.page_size)
         activity = build_activity(issues, args.assignee_field, base_url)
+
+        testing_query = args.testing_query or build_state_query(args.testing_state)
+        testing_issues = load_issues(base_url, token, testing_query, args.page_size)
+        testing_tasks = build_testing_tasks(
+            testing_issues,
+            args.priority_field,
+            base_url,
+        )
         write_json(Path(args.output), activity)
+        write_json(Path(args.testing_output), testing_tasks)
 
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_token and not args.no_telegram:
             send_telegram_report(
                 telegram_token,
                 args.telegram_chat_id,
-                format_telegram_report(activity),
+                format_telegram_report(activity, testing_tasks),
             )
     except HTTPError as error:
         details = error.read().decode("utf-8", errors="replace")
@@ -329,6 +423,7 @@ def main() -> int:
         return 1
 
     print(f"Written {len(activity)} users to {args.output}")
+    print(f"Written {len(testing_tasks)} testing tasks to {args.testing_output}")
     if os.getenv("TELEGRAM_BOT_TOKEN") and not args.no_telegram:
         print(f"Sent Telegram report to {args.telegram_chat_id}")
     return 0

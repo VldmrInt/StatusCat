@@ -1,0 +1,66 @@
+[
+  {
+    "task": "ritmonexx-1123: Доработки по филиалу СПБ. Пункты 2.2 и 2.3. (https://modimio.myjetbrains.com/issue/ritmonexx-1123)",
+    "priority": "Critical"
+  },
+  {
+    "task": "scalebay-1289: Scalebay. Сделать проверку почты при регистрации нового пользователя (https://modimio.myjetbrains.com/issue/scalebay-1289)",
+    "priority": "Critical"
+  },
+  {
+    "task": "modimio-4648: Внедрение редактора изображений (https://modimio.myjetbrains.com/issue/modimio-4648)",
+    "priority": "Major"
+  },
+  {
+    "task": "sklad-745: Синхронизация отображения коробок (https://modimio.myjetbrains.com/issue/sklad-745)",
+    "priority": "Major"
+  },
+  {
+    "task": "sklad-754: в ходе доработок и исправлений ошибок регистраций заказов озон сломались отгрузки (https://modimio.myjetbrains.com/issue/sklad-754)",
+    "priority": "Major"
+  },
+  {
+    "task": "modimio-4508: Проанализировать и описать техническое решение для трансляции товаров с админки на сайт Scalebay (https://modimio.myjetbrains.com/issue/modimio-4508)",
+    "priority": "Normal"
+  },
+  {
+    "task": "modimio-4651: Добавить передачу и выбор ТН ВЭД при создании карточки товара Ozon из админки (https://modimio.myjetbrains.com/issue/modimio-4651)",
+    "priority": "Normal"
+  },
+  {
+    "task": "modimio-4655: Модимио. Подсорт (https://modimio.myjetbrains.com/issue/modimio-4655)",
+    "priority": "Normal"
+  },
+  {
+    "task": "ritmonexx-1145: Статистика приоритетных заказов. Доработки (https://modimio.myjetbrains.com/issue/ritmonexx-1145)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1474: Заблокированный лот, фронт (https://modimio.myjetbrains.com/issue/scalebay-1474)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1580: Публичный профиль. Сделать скролл лотов пользователя. (https://modimio.myjetbrains.com/issue/scalebay-1580)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1637: Редактирование. Сменить объявление на аукцион. Ошибка (https://modimio.myjetbrains.com/issue/scalebay-1637)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1668: Scalebay. Избавиться от дублирования роутов и ssr логики в pages/catalog (https://modimio.myjetbrains.com/issue/scalebay-1668)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1703: Scalebay. Баги фронта (https://modimio.myjetbrains.com/issue/scalebay-1703)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1708: Некорректное отображение авторизации в хедере (https://modimio.myjetbrains.com/issue/scalebay-1708)",
+    "priority": "Normal"
+  },
+  {
+    "task": "scalebay-1740: Аукцион. Вилидация цен при создании и редактировании (https://modimio.myjetbrains.com/issue/scalebay-1740)",
+    "priority": "Normal"
+  }
+]
