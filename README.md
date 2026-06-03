@@ -29,6 +29,7 @@ YOUTRACK_STATE=В работе
 YOUTRACK_TESTING_STATE=Тестирование
 YOUTRACK_REVIEW_STATE=Ревью
 YOUTRACK_REVIEW_DAYS=7
+YOUTRACK_STATE_FIELD=State
 YOUTRACK_ASSIGNEE_FIELD=Assignee
 YOUTRACK_PRIORITY_FIELD=Priority
 YOUTRACK_PAGE_SIZE=100
@@ -63,7 +64,8 @@ Assignee: * State: {In Progress}
 [
   {
     "task": "ABC-124: Проверить авторизацию (https://your-company.youtrack.cloud/issue/ABC-124)",
-    "priority": "High"
+    "priority": "High",
+    "state_changed_at": "03.06.2026"
   }
 ]
 ```
@@ -71,7 +73,8 @@ Assignee: * State: {In Progress}
 Если задан `TELEGRAM_BOT_TOKEN`, после обновления JSON скрипт отправит красиво
 отформатированный отчет в Telegram: с датой-временем обновления по Москве,
 кликабельными ссылками на задачи и отдельным списком задач в статусе
-`Тестирование` с их приоритетами, а также списком задач на ревью не старше 7 дней.
+`Тестирование` с их приоритетами и датами перехода в статус, а также списком
+задач на ревью не старше 7 дней с датами перехода в статус.
 
 Если в вашем YouTrack статус называется `В работе`, запускайте так:
 
@@ -107,6 +110,13 @@ python .\youtrack_activity.py --review-output .\review.json
 
 ```powershell
 python .\youtrack_activity.py --assignee-field "Исполнитель"
+```
+
+Если поле статуса в YouTrack называется не `State`, укажите его явно. Это нужно
+для поиска даты перехода задачи в статусы тестирования и ревью:
+
+```powershell
+python .\youtrack_activity.py --state-field "Статус"
 ```
 
 Если поле приоритета называется не `Priority`, укажите его явно:

@@ -14,7 +14,7 @@ from html import escape
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -31,6 +31,11 @@ DEFAULT_FIELDS = (
     "idReadable,summary,customFields("
     "name,value(name,fullName,login)"
     ")"
+)
+DEFAULT_ACTIVITY_FIELDS = (
+    "id,timestamp,targetMember,field(name),"
+    "added(name,localizedName,fullName,login),"
+    "removed(name,localizedName,fullName,login)"
 )
 
 
@@ -86,6 +91,46 @@ def load_issues(base_url: str, token: str, query: str, page_size: int) -> list[d
     return issues
 
 
+def load_issue_activities(
+    base_url: str, token: str, issue_id: str, page_size: int
+) -> list[dict[str, Any]]:
+    activities: list[dict[str, Any]] = []
+    skip = 0
+
+    while True:
+        params = urlencode(
+            {
+                "fields": DEFAULT_ACTIVITY_FIELDS,
+                "categories": "CustomFieldCategory",
+                "reverse": "true",
+                "$top": page_size,
+                "$skip": skip,
+            }
+        )
+        encoded_issue_id = quote(issue_id, safe="")
+        url = f"{base_url.rstrip('/')}/api/issues/{encoded_issue_id}/activities?{params}"
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+
+        with urlopen(request, timeout=30) as response:
+            page = json.loads(response.read().decode("utf-8"))
+
+        if not page:
+            break
+
+        activities.extend(page)
+        if len(page) < page_size:
+            break
+        skip += page_size
+
+    return activities
+
+
 def get_assignees(issue: dict[str, Any], field_name: str) -> list[str]:
     value = get_custom_field_value(issue, field_name)
     users = value if isinstance(value, list) else [value]
@@ -123,6 +168,18 @@ def get_field_display_value(issue: dict[str, Any], field_name: str) -> str:
     return str(value or "")
 
 
+def get_activity_value_display(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(
+            value.get("localizedName")
+            or value.get("name")
+            or value.get("fullName")
+            or value.get("login")
+            or ""
+        )
+    return str(value or "")
+
+
 def build_task_text(issue: dict[str, Any], base_url: str) -> str:
     task_id = issue.get("idReadable", "").strip()
     summary = issue.get("summary", "").strip()
@@ -152,7 +209,10 @@ def build_activity(
 
 
 def build_priority_tasks(
-    issues: list[dict[str, Any]], priority_field: str, base_url: str
+    issues: list[dict[str, Any]],
+    priority_field: str,
+    base_url: str,
+    state_changed_at_by_issue: dict[str, str | None] | None = None,
 ) -> list[dict[str, str]]:
     tasks: list[dict[str, str]] = []
 
@@ -161,13 +221,16 @@ def build_priority_tasks(
         if not task:
             continue
 
-        tasks.append(
-            {
-                "task": task,
-                "priority": get_field_display_value(issue, priority_field)
-                or "Без приоритета",
-            }
-        )
+        item = {
+            "task": task,
+            "priority": get_field_display_value(issue, priority_field)
+            or "Без приоритета",
+        }
+        if state_changed_at_by_issue is not None:
+            item["state_changed_at"] = (
+                state_changed_at_by_issue.get(issue.get("idReadable", "")) or ""
+            )
+        tasks.append(item)
 
     return sorted(
         tasks,
@@ -185,6 +248,63 @@ def build_state_query(state: str) -> str:
 
 def build_recent_state_query(state: str, days: int) -> str:
     return f"State: {{{state}}} updated: {{minus {days}d}} .. *"
+
+
+def find_state_transition_timestamp(
+    activities: list[dict[str, Any]], state_field: str, state: str
+) -> int | None:
+    state_casefold = state.casefold()
+    state_field_casefold = state_field.casefold()
+
+    for activity in activities:
+        field = activity.get("field")
+        field_name = field.get("name") if isinstance(field, dict) else None
+        target_member = activity.get("targetMember")
+        is_state_field = (
+            isinstance(field_name, str) and field_name.casefold() == state_field_casefold
+        ) or (
+            isinstance(target_member, str)
+            and target_member.casefold() == state_field_casefold
+        )
+        if not is_state_field:
+            continue
+
+        added_value = get_activity_value_display(activity.get("added"))
+        if added_value.casefold() == state_casefold:
+            timestamp = activity.get("timestamp")
+            return timestamp if isinstance(timestamp, int) else None
+
+    return None
+
+
+def format_moscow_date(timestamp_ms: int | None) -> str:
+    if timestamp_ms is None:
+        return ""
+    value = datetime.fromtimestamp(timestamp_ms / 1000, tz=MOSCOW_TZ)
+    return value.strftime("%d.%m.%Y")
+
+
+def build_state_changed_at_by_issue(
+    issues: list[dict[str, Any]],
+    base_url: str,
+    token: str,
+    page_size: int,
+    state_field: str,
+    state: str,
+) -> dict[str, str | None]:
+    result: dict[str, str | None] = {}
+
+    for issue in issues:
+        issue_id = issue.get("idReadable", "")
+        if not issue_id:
+            continue
+
+        activities = load_issue_activities(base_url, token, issue_id, page_size)
+        result[issue_id] = format_moscow_date(
+            find_state_transition_timestamp(activities, state_field, state)
+        )
+
+    return result
 
 
 def parse_task_text(task: str) -> tuple[str, str | None]:
@@ -249,14 +369,18 @@ def format_telegram_report(
         lines.append("<b>Тестирование</b>")
         for item in testing_tasks:
             priority = escape(item["priority"])
-            lines.append(f"  - [{priority}] {format_telegram_task(item['task'])}")
+            changed_at = item.get("state_changed_at")
+            date_text = f", с {escape(changed_at)}" if changed_at else ""
+            lines.append(f"  - [{priority}{date_text}] {format_telegram_task(item['task'])}")
         lines.append("")
 
     if review_tasks:
         lines.append(f"<b>Ревью до {review_days} дней</b>")
         for item in review_tasks:
             priority = escape(item["priority"])
-            lines.append(f"  - [{priority}] {format_telegram_task(item['task'])}")
+            changed_at = item.get("state_changed_at")
+            date_text = f", с {escape(changed_at)}" if changed_at else ""
+            lines.append(f"  - [{priority}{date_text}] {format_telegram_task(item['task'])}")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -390,6 +514,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Full YouTrack search query for review tasks. Overrides --review-state and --review-days.",
     )
     parser.add_argument(
+        "--state-field",
+        default=os.getenv("YOUTRACK_STATE_FIELD", "State"),
+        help="State custom field name. Default: State",
+    )
+    parser.add_argument(
         "--assignee-field",
         default=os.getenv("YOUTRACK_ASSIGNEE_FIELD", "Assignee"),
         help="Assignee custom field name. Default: Assignee",
@@ -441,10 +570,19 @@ def main() -> int:
 
         testing_query = args.testing_query or build_state_query(args.testing_state)
         testing_issues = load_issues(base_url, token, testing_query, args.page_size)
+        testing_changed_at = build_state_changed_at_by_issue(
+            testing_issues,
+            base_url,
+            token,
+            args.page_size,
+            args.state_field,
+            args.testing_state,
+        )
         testing_tasks = build_priority_tasks(
             testing_issues,
             args.priority_field,
             base_url,
+            testing_changed_at,
         )
 
         review_query = args.review_query or build_recent_state_query(
@@ -452,10 +590,19 @@ def main() -> int:
             args.review_days,
         )
         review_issues = load_issues(base_url, token, review_query, args.page_size)
+        review_changed_at = build_state_changed_at_by_issue(
+            review_issues,
+            base_url,
+            token,
+            args.page_size,
+            args.state_field,
+            args.review_state,
+        )
         review_tasks = build_priority_tasks(
             review_issues,
             args.priority_field,
             base_url,
+            review_changed_at,
         )
         write_json(Path(args.output), activity)
         write_json(Path(args.testing_output), testing_tasks)
