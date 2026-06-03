@@ -20,6 +20,8 @@ from urllib.request import Request, urlopen
 
 DEFAULT_STATE = "In Progress"
 DEFAULT_TESTING_STATE = "Тестирование"
+DEFAULT_REVIEW_STATE = "Ревью"
+DEFAULT_REVIEW_DAYS = 7
 DEFAULT_PRIORITY_FIELD = "Priority"
 DEFAULT_TELEGRAM_CHAT_ID = "6274298423"
 TELEGRAM_MESSAGE_LIMIT = 4096
@@ -149,7 +151,7 @@ def build_activity(
     return dict(sorted(activity.items(), key=lambda item: item[0].casefold()))
 
 
-def build_testing_tasks(
+def build_priority_tasks(
     issues: list[dict[str, Any]], priority_field: str, base_url: str
 ) -> list[dict[str, str]]:
     tasks: list[dict[str, str]] = []
@@ -181,6 +183,10 @@ def build_state_query(state: str) -> str:
     return f"State: {{{state}}}"
 
 
+def build_recent_state_query(state: str, days: int) -> str:
+    return f"State: {{{state}}} updated: {{minus {days}d}} .. *"
+
+
 def parse_task_text(task: str) -> tuple[str, str | None]:
     if not task.endswith(")"):
         return task, None
@@ -206,13 +212,16 @@ def format_moscow_datetime(now: datetime | None = None) -> str:
 
 
 def format_telegram_report(
-    activity: dict[str, list[str]], testing_tasks: list[dict[str, str]]
+    activity: dict[str, list[str]],
+    testing_tasks: list[dict[str, str]],
+    review_tasks: list[dict[str, str]],
+    review_days: int,
 ) -> str:
     updated_at = format_moscow_datetime()
 
-    if not activity and not testing_tasks:
+    if not activity and not testing_tasks and not review_tasks:
         return (
-            "<b>YouTrack: сейчас задач в работе и на тестировании нет</b>\n"
+            "<b>YouTrack: сейчас задач в работе, на тестировании и на ревью нет</b>\n"
             f"Обновлено: <b>{updated_at}</b>"
         )
 
@@ -223,7 +232,8 @@ def format_telegram_report(
         (
             f"Пользователей: <b>{len(activity)}</b>, "
             f"задач в работе: <b>{task_count}</b>, "
-            f"на тестировании: <b>{len(testing_tasks)}</b>"
+            f"на тестировании: <b>{len(testing_tasks)}</b>, "
+            f"на ревью до {review_days} дней: <b>{len(review_tasks)}</b>"
         ),
         "",
     ]
@@ -238,6 +248,13 @@ def format_telegram_report(
     if testing_tasks:
         lines.append("<b>Тестирование</b>")
         for item in testing_tasks:
+            priority = escape(item["priority"])
+            lines.append(f"  - [{priority}] {format_telegram_task(item['task'])}")
+        lines.append("")
+
+    if review_tasks:
+        lines.append(f"<b>Ревью до {review_days} дней</b>")
+        for item in review_tasks:
             priority = escape(item["priority"])
             lines.append(f"  - [{priority}] {format_telegram_task(item['task'])}")
         lines.append("")
@@ -328,6 +345,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Testing tasks JSON path. Default: youtrack_testing.json",
     )
     parser.add_argument(
+        "--review-output",
+        default="youtrack_review.json",
+        help="Review tasks JSON path. Default: youtrack_review.json",
+    )
+    parser.add_argument(
         "-q",
         "--query",
         default=os.getenv("YOUTRACK_QUERY"),
@@ -350,6 +372,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--testing-query",
         default=os.getenv("YOUTRACK_TESTING_QUERY"),
         help="Full YouTrack search query for testing tasks. Overrides --testing-state.",
+    )
+    parser.add_argument(
+        "--review-state",
+        default=os.getenv("YOUTRACK_REVIEW_STATE", DEFAULT_REVIEW_STATE),
+        help=f"State that means the task is currently on review. Default: {DEFAULT_REVIEW_STATE}",
+    )
+    parser.add_argument(
+        "--review-days",
+        type=int,
+        default=int(os.getenv("YOUTRACK_REVIEW_DAYS", str(DEFAULT_REVIEW_DAYS))),
+        help=f"How many recent days to include for review tasks. Default: {DEFAULT_REVIEW_DAYS}",
+    )
+    parser.add_argument(
+        "--review-query",
+        default=os.getenv("YOUTRACK_REVIEW_QUERY"),
+        help="Full YouTrack search query for review tasks. Overrides --review-state and --review-days.",
     )
     parser.add_argument(
         "--assignee-field",
@@ -385,6 +423,10 @@ def main() -> int:
     base_url = os.getenv("YOUTRACK_URL")
     token = os.getenv("YOUTRACK_TOKEN")
 
+    if args.review_days < 1:
+        print("--review-days must be greater than 0.", file=sys.stderr)
+        return 2
+
     if not base_url or not token:
         print(
             "Set YOUTRACK_URL and YOUTRACK_TOKEN environment variables first.",
@@ -399,20 +441,37 @@ def main() -> int:
 
         testing_query = args.testing_query or build_state_query(args.testing_state)
         testing_issues = load_issues(base_url, token, testing_query, args.page_size)
-        testing_tasks = build_testing_tasks(
+        testing_tasks = build_priority_tasks(
             testing_issues,
+            args.priority_field,
+            base_url,
+        )
+
+        review_query = args.review_query or build_recent_state_query(
+            args.review_state,
+            args.review_days,
+        )
+        review_issues = load_issues(base_url, token, review_query, args.page_size)
+        review_tasks = build_priority_tasks(
+            review_issues,
             args.priority_field,
             base_url,
         )
         write_json(Path(args.output), activity)
         write_json(Path(args.testing_output), testing_tasks)
+        write_json(Path(args.review_output), review_tasks)
 
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_token and not args.no_telegram:
             send_telegram_report(
                 telegram_token,
                 args.telegram_chat_id,
-                format_telegram_report(activity, testing_tasks),
+                format_telegram_report(
+                    activity,
+                    testing_tasks,
+                    review_tasks,
+                    args.review_days,
+                ),
             )
     except HTTPError as error:
         details = error.read().decode("utf-8", errors="replace")
@@ -424,6 +483,7 @@ def main() -> int:
 
     print(f"Written {len(activity)} users to {args.output}")
     print(f"Written {len(testing_tasks)} testing tasks to {args.testing_output}")
+    print(f"Written {len(review_tasks)} review tasks to {args.review_output}")
     if os.getenv("TELEGRAM_BOT_TOKEN") and not args.no_telegram:
         print(f"Sent Telegram report to {args.telegram_chat_id}")
     return 0
