@@ -29,6 +29,7 @@ YOUTRACK_STATE=В работе
 YOUTRACK_TESTING_STATE=Тестирование
 YOUTRACK_REVIEW_STATE=Ревью
 YOUTRACK_REVIEW_DAYS=7
+YOUTRACK_SEPARATE_PROJECT=scalebay
 YOUTRACK_STATE_FIELD=State
 YOUTRACK_ASSIGNEE_FIELD=Assignee
 YOUTRACK_PRIORITY_FIELD=Priority
@@ -75,6 +76,7 @@ Assignee: * State: {In Progress}
 кликабельными ссылками на задачи и отдельным списком задач в статусе
 `Тестирование` с их приоритетами и датами перехода в статус, а также списком
 задач на ревью не старше 7 дней с датами перехода в статус.
+Задачи проекта `scalebay` отправляются отдельным Telegram-сообщением.
 
 Если в вашем YouTrack статус называется `В работе`, запускайте так:
 
@@ -154,6 +156,14 @@ python .\youtrack_activity.py --review-state "Code Review" --review-days 7
 
 ```powershell
 python .\youtrack_activity.py --review-query "project: ABC State: {Ревью} updated: {minus 7d} .. *"
+```
+
+По умолчанию задачи проекта `scalebay` отделяются во второе Telegram-сообщение.
+Можно указать другой проект или отключить разделение:
+
+```powershell
+python .\youtrack_activity.py --separate-project "modimio"
+python .\youtrack_activity.py --separate-project ""
 ```
 
 Отправить в другой чат:

@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from html import escape
@@ -22,6 +23,7 @@ DEFAULT_STATE = "In Progress"
 DEFAULT_TESTING_STATE = "Тестирование"
 DEFAULT_REVIEW_STATE = "Ревью"
 DEFAULT_REVIEW_DAYS = 7
+DEFAULT_SEPARATE_PROJECT = "scalebay"
 DEFAULT_PRIORITY_FIELD = "Priority"
 DEFAULT_TELEGRAM_CHAT_ID = "6274298423"
 TELEGRAM_MESSAGE_LIMIT = 4096
@@ -37,6 +39,8 @@ DEFAULT_ACTIVITY_FIELDS = (
     "added(name,localizedName,fullName,login),"
     "removed(name,localizedName,fullName,login)"
 )
+HTTP_RETRY_COUNT = 3
+HTTP_RETRY_DELAY_SECONDS = 2
 
 
 def load_env_file(path: Path) -> None:
@@ -53,6 +57,21 @@ def load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if name and name not in os.environ:
             os.environ[name] = value
+
+
+def load_json(request: Request) -> Any:
+    for attempt in range(HTTP_RETRY_COUNT):
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError:
+            raise
+        except (TimeoutError, URLError):
+            if attempt == HTTP_RETRY_COUNT - 1:
+                raise
+            time.sleep(HTTP_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    raise RuntimeError("Unexpected request retry state.")
 
 
 def load_issues(base_url: str, token: str, query: str, page_size: int) -> list[dict[str, Any]]:
@@ -117,8 +136,7 @@ def load_issue_activities(
             },
         )
 
-        with urlopen(request, timeout=30) as response:
-            page = json.loads(response.read().decode("utf-8"))
+        page = load_json(request)
 
         if not page:
             break
@@ -339,11 +357,56 @@ def format_moscow_datetime(now: datetime | None = None) -> str:
     return value.strftime("%d.%m.%Y %H:%M:%S МСК")
 
 
+def get_task_project(task: str) -> str:
+    task_text, _ = parse_task_text(task)
+    task_id = task_text.split(":", 1)[0].strip()
+    project, separator, _ = task_id.partition("-")
+    return project.casefold() if separator else ""
+
+
+def is_project_task(task: str, project: str) -> bool:
+    return bool(project) and get_task_project(task) == project.casefold()
+
+
+def split_activity_by_project(
+    activity: dict[str, list[str]], project: str
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    other_activity: dict[str, list[str]] = {}
+    project_activity: dict[str, list[str]] = {}
+
+    for user, tasks in activity.items():
+        other_tasks = [task for task in tasks if not is_project_task(task, project)]
+        project_tasks = [task for task in tasks if is_project_task(task, project)]
+        if other_tasks:
+            other_activity[user] = other_tasks
+        if project_tasks:
+            project_activity[user] = project_tasks
+
+    return other_activity, project_activity
+
+
+def split_priority_tasks_by_project(
+    tasks: list[dict[str, str]], project: str
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    other_tasks = [item for item in tasks if not is_project_task(item["task"], project)]
+    project_tasks = [item for item in tasks if is_project_task(item["task"], project)]
+    return other_tasks, project_tasks
+
+
+def has_report_items(
+    activity: dict[str, list[str]],
+    testing_tasks: list[dict[str, str]],
+    review_tasks: list[dict[str, str]],
+) -> bool:
+    return bool(activity or testing_tasks or review_tasks)
+
+
 def format_telegram_report(
     activity: dict[str, list[str]],
     testing_tasks: list[dict[str, str]],
     review_tasks: list[dict[str, str]],
     review_days: int,
+    title: str = "YouTrack: кто чем занят",
 ) -> str:
     updated_at = format_moscow_datetime()
 
@@ -355,7 +418,7 @@ def format_telegram_report(
 
     task_count = sum(len(tasks) for tasks in activity.values())
     lines = [
-        "<b>YouTrack: кто чем занят</b>",
+        f"<b>{escape(title)}</b>",
         f"Обновлено: <b>{updated_at}</b>",
         (
             f"Пользователей: <b>{len(activity)}</b>, "
@@ -392,6 +455,56 @@ def format_telegram_report(
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def format_telegram_reports(
+    activity: dict[str, list[str]],
+    testing_tasks: list[dict[str, str]],
+    review_tasks: list[dict[str, str]],
+    review_days: int,
+    separate_project: str,
+) -> list[str]:
+    project = separate_project.strip()
+    if not project:
+        return [
+            format_telegram_report(activity, testing_tasks, review_tasks, review_days)
+        ]
+
+    other_activity, project_activity = split_activity_by_project(activity, project)
+    other_testing_tasks, project_testing_tasks = split_priority_tasks_by_project(
+        testing_tasks,
+        project,
+    )
+    other_review_tasks, project_review_tasks = split_priority_tasks_by_project(
+        review_tasks,
+        project,
+    )
+
+    reports: list[str] = []
+    if has_report_items(other_activity, other_testing_tasks, other_review_tasks):
+        reports.append(
+            format_telegram_report(
+                other_activity,
+                other_testing_tasks,
+                other_review_tasks,
+                review_days,
+            )
+        )
+
+    if has_report_items(project_activity, project_testing_tasks, project_review_tasks):
+        reports.append(
+            format_telegram_report(
+                project_activity,
+                project_testing_tasks,
+                project_review_tasks,
+                review_days,
+                title=f"YouTrack: {project}",
+            )
+        )
+
+    return reports or [
+        format_telegram_report(activity, testing_tasks, review_tasks, review_days)
+    ]
 
 
 def split_message(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -548,6 +661,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Telegram chat/user id. Default: {DEFAULT_TELEGRAM_CHAT_ID}",
     )
     parser.add_argument(
+        "--separate-project",
+        default=os.getenv("YOUTRACK_SEPARATE_PROJECT", DEFAULT_SEPARATE_PROJECT),
+        help=(
+            "Project key to send as a separate Telegram report. "
+            f"Default: {DEFAULT_SEPARATE_PROJECT}. Use an empty value to disable."
+        ),
+    )
+    parser.add_argument(
         "--no-telegram",
         action="store_true",
         help="Do not send Telegram report even if TELEGRAM_BOT_TOKEN is set.",
@@ -618,15 +739,26 @@ def main() -> int:
 
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_token and not args.no_telegram:
-            send_telegram_report(
-                telegram_token,
-                args.telegram_chat_id,
-                format_telegram_report(
-                    activity,
-                    testing_tasks,
-                    review_tasks,
-                    args.review_days,
-                ),
+            telegram_reports = format_telegram_reports(
+                activity,
+                testing_tasks,
+                review_tasks,
+                args.review_days,
+                args.separate_project,
+            )
+            for report in telegram_reports:
+                send_telegram_report(
+                    telegram_token,
+                    args.telegram_chat_id,
+                    report,
+                )
+        else:
+            telegram_reports = format_telegram_reports(
+                activity,
+                testing_tasks,
+                review_tasks,
+                args.review_days,
+                args.separate_project,
             )
     except HTTPError as error:
         details = error.read().decode("utf-8", errors="replace")
@@ -635,12 +767,17 @@ def main() -> int:
     except URLError as error:
         print(f"Connection error: {error.reason}", file=sys.stderr)
         return 1
+    except TimeoutError as error:
+        print(f"Connection timeout: {error}", file=sys.stderr)
+        return 1
 
     print(f"Written {len(activity)} users to {args.output}")
     print(f"Written {len(testing_tasks)} testing tasks to {args.testing_output}")
     print(f"Written {len(review_tasks)} review tasks to {args.review_output}")
     if os.getenv("TELEGRAM_BOT_TOKEN") and not args.no_telegram:
-        print(f"Sent Telegram report to {args.telegram_chat_id}")
+        print(
+            f"Sent {len(telegram_reports)} Telegram report(s) to {args.telegram_chat_id}"
+        )
     return 0
 
 
