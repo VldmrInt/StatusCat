@@ -180,6 +180,11 @@ def get_activity_value_display(value: Any) -> str:
     return str(value or "")
 
 
+def get_activity_value_displays(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    return [display for item in values if (display := get_activity_value_display(item))]
+
+
 def build_task_text(issue: dict[str, Any], base_url: str) -> str:
     task_id = issue.get("idReadable", "").strip()
     summary = issue.get("summary", "").strip()
@@ -265,12 +270,15 @@ def find_state_transition_timestamp(
         ) or (
             isinstance(target_member, str)
             and target_member.casefold() == state_field_casefold
+        ) or (
+            isinstance(target_member, str)
+            and target_member.startswith("__CUSTOM_FIELD__State_")
         )
         if not is_state_field:
             continue
 
-        added_value = get_activity_value_display(activity.get("added"))
-        if added_value.casefold() == state_casefold:
+        added_values = get_activity_value_displays(activity.get("added"))
+        if any(value.casefold() == state_casefold for value in added_values):
             timestamp = activity.get("timestamp")
             return timestamp if isinstance(timestamp, int) else None
 
