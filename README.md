@@ -1,7 +1,130 @@
-# YouTrack activity export
+# StatusCat
 
-Минимальный скрипт, который выгружает из YouTrack список задач в работе
-и записывает JSON в формате:
+StatusCat выгружает текущие задачи из YouTrack, группирует их по исполнителям и
+опционально отправляет отчет в Telegram.
+
+Скрипт формирует три JSON-отчета:
+
+- `youtrack_activity.json` - задачи в работе, сгруппированные по исполнителям.
+- `youtrack_testing.json` - задачи на тестировании с приоритетами и датами перехода.
+- `youtrack_review.json` - задачи на ревью за последние N дней.
+
+## Возможности
+
+- Загрузка настроек из `.env`.
+- Настраиваемые названия статусов и полей YouTrack.
+- Отдельные запросы для задач в работе, на тестировании и на ревью.
+- Отправка HTML-отчета в Telegram.
+- Разделение задач выбранного проекта в отдельное Telegram-сообщение.
+- Пагинация YouTrack API и повтор запросов при временных сетевых ошибках.
+
+## Требования
+
+- Python 3.9 или новее.
+- Постоянный токен YouTrack с доступом к нужным задачам.
+- Telegram-бот, если нужна отправка отчета в Telegram.
+
+Внешние Python-зависимости не требуются, используется только стандартная
+библиотека.
+
+## Быстрый старт
+
+Скопируйте пример настроек:
+
+```powershell
+Copy-Item .\.env.example .\.env
+notepad .\.env
+```
+
+Заполните минимум:
+
+```text
+YOUTRACK_URL=https://your-company.youtrack.cloud
+YOUTRACK_TOKEN=perm-...
+```
+
+Запустите выгрузку:
+
+```powershell
+python .\youtrack_activity.py
+```
+
+После успешного запуска в рабочей папке появятся JSON-отчеты. Эти файлы
+являются локальными результатами выполнения и не должны коммититься.
+
+## Настройки
+
+Все настройки можно передать через `.env` или аргументы командной строки.
+Аргументы командной строки имеют приоритет.
+
+| Переменная | Аргумент | Назначение |
+| --- | --- | --- |
+| `YOUTRACK_URL` | - | URL YouTrack, например `https://your-company.youtrack.cloud`. |
+| `YOUTRACK_TOKEN` | - | Постоянный токен YouTrack. |
+| `YOUTRACK_QUERY` | `--query` | Полный запрос для задач в работе. |
+| `YOUTRACK_STATE` | `--state` | Статус задач в работе. |
+| `YOUTRACK_TESTING_QUERY` | `--testing-query` | Полный запрос для задач на тестировании. |
+| `YOUTRACK_TESTING_STATE` | `--testing-state` | Статус задач на тестировании. |
+| `YOUTRACK_REVIEW_QUERY` | `--review-query` | Полный запрос для задач на ревью. |
+| `YOUTRACK_REVIEW_STATE` | `--review-state` | Статус задач на ревью. |
+| `YOUTRACK_REVIEW_DAYS` | `--review-days` | Сколько последних дней включать в ревью-отчет. |
+| `YOUTRACK_STATE_FIELD` | `--state-field` | Название поля статуса в YouTrack. |
+| `YOUTRACK_ASSIGNEE_FIELD` | `--assignee-field` | Название поля исполнителя. |
+| `YOUTRACK_PRIORITY_FIELD` | `--priority-field` | Название поля приоритета. |
+| `YOUTRACK_PAGE_SIZE` | `--page-size` | Размер страницы для YouTrack API. |
+| `YOUTRACK_SEPARATE_PROJECT` | `--separate-project` | Ключ проекта для отдельного Telegram-отчета. |
+| `TELEGRAM_BOT_TOKEN` | - | Токен Telegram-бота. |
+| `TELEGRAM_CHAT_ID` | `--telegram-chat-id` | ID чата или пользователя для отправки отчета. |
+
+Дополнительные аргументы:
+
+- `--env-file .\.env.local` - использовать другой файл настроек.
+- `--output .\activity.json` - изменить файл отчета по исполнителям.
+- `--testing-output .\testing.json` - изменить файл отчета по тестированию.
+- `--review-output .\review.json` - изменить файл отчета по ревью.
+- `--no-telegram` - не отправлять отчет в Telegram для текущего запуска.
+
+## Примеры
+
+Выгрузить задачи со статусом `В работе`:
+
+```powershell
+python .\youtrack_activity.py --state "В работе"
+```
+
+Задать полный YouTrack-запрос:
+
+```powershell
+python .\youtrack_activity.py -q "project: ABC Assignee: * State: {В работе}"
+```
+
+Изменить период ревью:
+
+```powershell
+python .\youtrack_activity.py --review-state "Ревью" --review-days 14
+```
+
+Отключить разделение проекта на отдельное Telegram-сообщение:
+
+```powershell
+python .\youtrack_activity.py --separate-project ""
+```
+
+## Telegram
+
+Чтобы включить отправку:
+
+1. Создайте бота через BotFather.
+2. Добавьте токен в `TELEGRAM_BOT_TOKEN`.
+3. Укажите `TELEGRAM_CHAT_ID`.
+4. Если отправляете отчет пользователю лично, пользователь должен хотя бы один
+   раз написать боту.
+
+Если `TELEGRAM_BOT_TOKEN` не задан, скрипт только обновит JSON-файлы.
+
+## Формат отчетов
+
+`youtrack_activity.json`:
 
 ```json
 {
@@ -11,55 +134,7 @@
 }
 ```
 
-## Настройка через файл
-
-Скопируйте `.env.example` в `.env` и заполните значения:
-
-```powershell
-Copy-Item .\.env.example .\.env
-notepad .\.env
-```
-
-Пример `.env`:
-
-```text
-YOUTRACK_URL=https://your-company.youtrack.cloud
-YOUTRACK_TOKEN=perm-...
-YOUTRACK_STATE=В работе
-YOUTRACK_TESTING_STATE=Тестирование
-YOUTRACK_REVIEW_STATE=Ревью
-YOUTRACK_REVIEW_DAYS=7
-YOUTRACK_SEPARATE_PROJECT=scalebay
-YOUTRACK_STATE_FIELD=State
-YOUTRACK_ASSIGNEE_FIELD=Assignee
-YOUTRACK_PRIORITY_FIELD=Priority
-YOUTRACK_PAGE_SIZE=100
-
-TELEGRAM_BOT_TOKEN=123456789:AA...
-TELEGRAM_CHAT_ID=6274298423
-```
-
-Для Telegram создайте бота через BotFather и вставьте токен в `TELEGRAM_BOT_TOKEN`.
-По умолчанию отчет отправляется пользователю с id из `TELEGRAM_CHAT_ID`.
-Пользователь должен хотя бы один раз написать боту сам, иначе Telegram не разрешит
-боту отправить личное сообщение.
-
-## Запуск
-
-```powershell
-python .\youtrack_activity.py
-```
-
-По умолчанию скрипт ищет задачи по запросу:
-
-```text
-Assignee: * State: {In Progress}
-```
-
-И создает или обновляет файл `youtrack_activity.json`.
-Отдельный список задач на тестировании с приоритетами записывается в
-`youtrack_testing.json`. Список задач на ревью, обновленных за последние 7 дней,
-записывается в `youtrack_review.json`.
+`youtrack_testing.json` и `youtrack_review.json`:
 
 ```json
 [
@@ -71,115 +146,13 @@ Assignee: * State: {In Progress}
 ]
 ```
 
-Если задан `TELEGRAM_BOT_TOKEN`, после обновления JSON скрипт отправит красиво
-отформатированный отчет в Telegram: с датой-временем обновления по Москве,
-кликабельными ссылками на задачи и отдельным списком задач в статусе
-`Тестирование` с их приоритетами и датами перехода в статус, а также списком
-задач на ревью не старше 7 дней с датами перехода в статус.
-Задачи проекта `scalebay` отправляются отдельным Telegram-сообщением.
+## Что не коммитить
 
-Если в вашем YouTrack статус называется `В работе`, запускайте так:
+В репозиторий не должны попадать:
 
-```powershell
-python .\youtrack_activity.py --state "В работе"
-```
+- `.env` и другие локальные env-файлы с токенами.
+- Сгенерированные отчеты `youtrack_activity.json`, `youtrack_testing.json`,
+  `youtrack_review.json`.
+- Python-кэши, виртуальные окружения, логи и временные файлы редакторов.
 
-Или укажите это в `.env`:
-
-```text
-YOUTRACK_STATE=В работе
-```
-
-Можно указать другой файл или запрос:
-
-```powershell
-python .\youtrack_activity.py -o .\activity.json -q "project: ABC Assignee: * State: {В работе}"
-```
-
-Можно указать другой файл для списка задач на тестировании:
-
-```powershell
-python .\youtrack_activity.py --testing-output .\testing.json
-```
-
-Можно указать другой файл для списка задач на ревью:
-
-```powershell
-python .\youtrack_activity.py --review-output .\review.json
-```
-
-Если поле исполнителя в YouTrack называется не `Assignee`, укажите его явно:
-
-```powershell
-python .\youtrack_activity.py --assignee-field "Исполнитель"
-```
-
-Если поле статуса в YouTrack называется не `State`, укажите его явно. Это нужно
-для поиска даты перехода задачи в статусы тестирования и ревью:
-
-```powershell
-python .\youtrack_activity.py --state-field "Статус"
-```
-
-Если поле приоритета называется не `Priority`, укажите его явно:
-
-```powershell
-python .\youtrack_activity.py --priority-field "Приоритет"
-```
-
-Если статус тестирования в YouTrack называется иначе, укажите его через аргумент
-или `.env`:
-
-```powershell
-python .\youtrack_activity.py --testing-state "Ready for QA"
-```
-
-Можно задать полный запрос для списка тестирования:
-
-```powershell
-python .\youtrack_activity.py --testing-query "project: ABC State: {Тестирование}"
-```
-
-По умолчанию список ревью строится по запросу:
-
-```text
-State: {Ревью} updated: {minus 7d} .. *
-```
-
-Если статус ревью в YouTrack называется иначе или нужен другой период:
-
-```powershell
-python .\youtrack_activity.py --review-state "Code Review" --review-days 7
-```
-
-Можно задать полный запрос для списка ревью:
-
-```powershell
-python .\youtrack_activity.py --review-query "project: ABC State: {Ревью} updated: {minus 7d} .. *"
-```
-
-По умолчанию задачи проекта `scalebay` отделяются во второе Telegram-сообщение.
-Можно указать другой проект или отключить разделение:
-
-```powershell
-python .\youtrack_activity.py --separate-project "modimio"
-python .\youtrack_activity.py --separate-project ""
-```
-
-Отправить в другой чат:
-
-```powershell
-python .\youtrack_activity.py --telegram-chat-id "123456789"
-```
-
-Отключить отправку в Telegram для одного запуска:
-
-```powershell
-python .\youtrack_activity.py --no-telegram
-```
-
-Использовать другой файл настроек:
-
-```powershell
-python .\youtrack_activity.py --env-file .\.env.local
-```
+Актуальные правила находятся в `.gitignore`.
