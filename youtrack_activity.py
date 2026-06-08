@@ -28,6 +28,7 @@ DEFAULT_PRIORITY_FIELD = "Priority"
 DEFAULT_TELEGRAM_CHAT_ID = "6274298423"
 TELEGRAM_MESSAGE_LIMIT = 4096
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+DEFAULT_TIME_API_URL = "https://timeapi.io/api/time/current/zone?timeZone=Europe/Moscow"
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_FIELDS = (
     "idReadable,summary,customFields("
@@ -357,6 +358,38 @@ def format_moscow_datetime(now: datetime | None = None) -> str:
     return value.strftime("%d.%m.%Y %H:%M:%S МСК")
 
 
+def load_moscow_datetime_from_api(time_api_url: str) -> datetime:
+    request = Request(time_api_url, headers={"Accept": "application/json"})
+    data = load_json(request)
+
+    if not isinstance(data, dict):
+        raise ValueError("Time API returned non-object JSON.")
+
+    datetime_value = data.get("datetime") or data.get("dateTime")
+    if not isinstance(datetime_value, str):
+        raise ValueError("Time API response does not contain datetime or dateTime.")
+
+    value = datetime.fromisoformat(datetime_value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=MOSCOW_TZ)
+    return value.astimezone(MOSCOW_TZ)
+
+
+def describe_time_api_error(error: BaseException) -> str:
+    if isinstance(error, HTTPError):
+        return f"HTTP error {error.code}"
+    if isinstance(error, URLError):
+        return f"connection error: {error.reason}"
+    return str(error)
+
+
+def should_send_telegram_now(now: datetime) -> bool:
+    moscow_now = now.astimezone(MOSCOW_TZ)
+    is_weekend = moscow_now.weekday() >= 5
+    is_quiet_hours = moscow_now.hour >= 19 or moscow_now.hour < 8
+    return not is_weekend and not is_quiet_hours
+
+
 def get_task_project(task: str) -> str:
     task_text, _ = parse_task_text(task)
     task_id = task_text.split(":", 1)[0].strip()
@@ -407,8 +440,9 @@ def format_telegram_report(
     review_tasks: list[dict[str, str]],
     review_days: int,
     title: str = "YouTrack: кто чем занят",
+    updated_at_time: datetime | None = None,
 ) -> str:
-    updated_at = format_moscow_datetime()
+    updated_at = format_moscow_datetime(updated_at_time)
 
     if not activity and not testing_tasks and not review_tasks:
         return (
@@ -463,11 +497,18 @@ def format_telegram_reports(
     review_tasks: list[dict[str, str]],
     review_days: int,
     separate_project: str,
+    updated_at_time: datetime | None = None,
 ) -> list[str]:
     project = separate_project.strip()
     if not project:
         return [
-            format_telegram_report(activity, testing_tasks, review_tasks, review_days)
+            format_telegram_report(
+                activity,
+                testing_tasks,
+                review_tasks,
+                review_days,
+                updated_at_time=updated_at_time,
+            )
         ]
 
     other_activity, project_activity = split_activity_by_project(activity, project)
@@ -488,6 +529,7 @@ def format_telegram_reports(
                 other_testing_tasks,
                 other_review_tasks,
                 review_days,
+                updated_at_time=updated_at_time,
             )
         )
 
@@ -499,11 +541,18 @@ def format_telegram_reports(
                 project_review_tasks,
                 review_days,
                 title=f"YouTrack: {project}",
+                updated_at_time=updated_at_time,
             )
         )
 
     return reports or [
-        format_telegram_report(activity, testing_tasks, review_tasks, review_days)
+        format_telegram_report(
+            activity,
+            testing_tasks,
+            review_tasks,
+            review_days,
+            updated_at_time=updated_at_time,
+        )
     ]
 
 
@@ -661,6 +710,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Telegram chat/user id. Default: {DEFAULT_TELEGRAM_CHAT_ID}",
     )
     parser.add_argument(
+        "--time-api-url",
+        default=os.getenv("TIME_API_URL", DEFAULT_TIME_API_URL),
+        help=(
+            "External API URL used to check Moscow time before Telegram sending. "
+            f"Default: {DEFAULT_TIME_API_URL}"
+        ),
+    )
+    parser.add_argument(
         "--separate-project",
         default=os.getenv("YOUTRACK_SEPARATE_PROJECT", DEFAULT_SEPARATE_PROJECT),
         help=(
@@ -739,19 +796,37 @@ def main() -> int:
 
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if telegram_token and not args.no_telegram:
-            telegram_reports = format_telegram_reports(
-                activity,
-                testing_tasks,
-                review_tasks,
-                args.review_days,
-                args.separate_project,
-            )
-            for report in telegram_reports:
-                send_telegram_report(
-                    telegram_token,
-                    args.telegram_chat_id,
-                    report,
+            try:
+                moscow_now = load_moscow_datetime_from_api(args.time_api_url)
+            except (HTTPError, URLError, TimeoutError, ValueError) as error:
+                telegram_reports = []
+                print(
+                    "Telegram sending skipped: cannot verify Moscow time via "
+                    f"external API ({describe_time_api_error(error)}).",
+                    file=sys.stderr,
                 )
+            else:
+                if should_send_telegram_now(moscow_now):
+                    telegram_reports = format_telegram_reports(
+                        activity,
+                        testing_tasks,
+                        review_tasks,
+                        args.review_days,
+                        args.separate_project,
+                        updated_at_time=moscow_now,
+                    )
+                    for report in telegram_reports:
+                        send_telegram_report(
+                            telegram_token,
+                            args.telegram_chat_id,
+                            report,
+                        )
+                else:
+                    telegram_reports = []
+                    print(
+                        "Telegram sending skipped by Moscow schedule "
+                        f"({format_moscow_datetime(moscow_now)})."
+                    )
         else:
             telegram_reports = format_telegram_reports(
                 activity,
@@ -775,9 +850,12 @@ def main() -> int:
     print(f"Written {len(testing_tasks)} testing tasks to {args.testing_output}")
     print(f"Written {len(review_tasks)} review tasks to {args.review_output}")
     if os.getenv("TELEGRAM_BOT_TOKEN") and not args.no_telegram:
-        print(
-            f"Sent {len(telegram_reports)} Telegram report(s) to {args.telegram_chat_id}"
-        )
+        if telegram_reports:
+            print(
+                f"Sent {len(telegram_reports)} Telegram report(s) to {args.telegram_chat_id}"
+            )
+        else:
+            print("Sent 0 Telegram reports.")
     return 0
 
 
