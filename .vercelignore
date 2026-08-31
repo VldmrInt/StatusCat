@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+__pycache__
+*.pyc
+youtrack_activity.json
+youtrack_testing.json
+youtrack_review.json
